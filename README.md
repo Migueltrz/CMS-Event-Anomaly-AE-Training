@@ -215,6 +215,8 @@ class Autoencoder(L.LightningModule):
         return self.decoder(z)
 ````
 
+---
+
 ### 3. Training and optimization
 The model is trained using `Smooth L1 Loss` (Huber Loss) to improve robustness against outliers and reduce the influence of extreme reconstruction errors often caused by rare signal events.
 
@@ -244,11 +246,21 @@ trainer.fit(model, train_dataloaders=ae_tdl, val_dataloaders=ae_vdl)
 ````
 After training, the loss curves are plotted.
 
+````python
+plt.plot(model.training_losses, label="Training Loss")
+plt.plot(model.validation_losses[1:], label="Validation Loss")
+plt.xlabel('Epochs')
+plt.ylabel('Reconstruction Error')
+plt.legend()
+plt.savefig("figs/losscurv.pdf")
+plt.show()
+````
+
 ---
 
 ### 4. Anomaly Detection and Scoring
 
-After training, the Autoencoder reconstructs unseen data. The reconstruction error is computed for each event to determine its anomaly likelihood.
+The Autoencoder reconstructs unseen data. The reconstruction error is computed for each event to determine its anomaly likelihood.
 
 ````python
 pred = trainer.predict(model, tdl)
@@ -258,14 +270,76 @@ reco = np.mean((np.vstack(pred) - X_test) ** 2, axis=1)
 * Low error → event resembles background (QCD-like).
 * High error → event deviates from standard patterns (potential signal or anomaly).
 
+A comparison between background and signal reconstruction errors is shown in logarithmic scale
+
+````python
+plt.hist(reco[ruido_idx], bins=50, alpha=0.3, label='Background')
+plt.hist(reco[senal_idx], bins=50, alpha=0.6, label='Signal')
+plt.yscale('log')
+plt.xlabel('Reconstruction Error')
+plt.ylabel('Events')
+plt.legend()
+plt.savefig("figs/REH.pdf")
+plt.show()
+````
 ---
 ### 5. Evaluation and Visualization
 
 The Autoencoder’s performance is quantified through:
 
-* ROC curve to measure discriminative power between signal and noise.
-* PCA and t-SNE projections to explore the latent space separation.
-* Scatter plots to visualize reconstruction error per event.
+ ROC curve to measure discriminative power between signal and noise.
+  
+````python
+fpr, tpr, thresholds = roc_curve(y_test[:, 1], reco)
+roc_auc = auc(fpr, tpr)
+plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.2f}')
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.legend()
+plt.savefig("figs/rocurv.pdf")
+plt.show()
+
+````
+
+PCA and t-SNE projections to explore the latent space separation.
+
+````python
+# PCA
+pca = PCA(n_components=2)
+proj = pca.fit_transform(model.encoder(torch.FloatTensor(X_test)).detach().numpy())
+plt.scatter(proj[:, 0], proj[:, 1], c=y_test.argmax(axis=1), cmap='coolwarm', alpha=0.6)
+plt.xlabel('PC1'); plt.ylabel('PC2'); plt.title('PCA of Latent Space')
+plt.savefig("figs/PCA.pdf")
+plt.show()
+
+# t-SNE
+tsne = TSNE(n_components=2, random_state=42)
+embed = tsne.fit_transform(proj)
+plt.scatter(embed[:, 0], embed[:, 1], c=y_test.argmax(axis=1), cmap='viridis', alpha=0.6)
+plt.xlabel('t-SNE 1'); plt.ylabel('t-SNE 2'); plt.title('t-SNE of Latent Space')
+plt.savefig("figs/SNE.pdf")
+plt.show()
+````
+
+Scatter plots to visualize reconstruction error per event.
+
+````python
+threshold = 1300
+plt.figure(figsize=(27,8))
+plt.scatter(np.arange(len(reco)), reco, c=y_test[:,1], cmap='coolwarm', s=100, alpha=1)
+plt.axhline(threshold, color='black', linestyle='--', linewidth=2)
+plt.xlabel('Event Number')
+plt.ylabel('Reconstruction Error')
+plt.title('Reconstruction Error Distribution')
+plt.legend(['Threshold', 'Background', 'Signal'])
+plt.savefig("figs/scat.pdf")
+plt.show()
+
+````
+  
+
 ---
 
 ## Results
