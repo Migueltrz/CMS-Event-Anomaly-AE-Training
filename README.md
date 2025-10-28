@@ -175,109 +175,99 @@ class SensorDataset(Dataset):
         return torch.FloatTensor(self.dataset[index])
 ````
 
-
+---
 ### 2. Model Architecture
 
-The Autoencoder is a **symmetric neural network** composed of an encoder (compression) and decoder (reconstruction).  
-Its purpose is to learn the most representative latent structure of standard (non-anomalous) events.
+The model is a **fully connected Autoencoder** implemented using **PyTorch Lightning**, designed for the reconstruction of particle-physics observables extracted from CMS data.  
+It compresses multidimensional event-level features into a smaller latent representation and reconstructs them to detect anomalies based on reconstruction error.
 
 ```python
-import torch.nn as nn
+class Autoencoder(L.LightningModule):
+    def __init__(self, in_dim):
+        super().__init__()
+        self.save_hyperparameters()
 
-class Autoencoder(nn.Module):
-    def __init__(self, input_dim):
-        super(Autoencoder, self).__init__()
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32)
+            nn.Linear(in_dim, 64),
+            nn.BatchNorm1d(64),
+            nn.SELU(),
+            nn.Linear(64, 32),
+            nn.BatchNorm1d(32),
+            nn.SELU(),
+            nn.Linear(32, 16),
         )
+
         self.decoder = nn.Sequential(
+            nn.Linear(16, 32),
+            nn.BatchNorm1d(32),
+            nn.SELU(),
             nn.Linear(32, 64),
-            nn.ReLU(),
-            nn.Linear(64, 128),
-            nn.ReLU(),
-            nn.Linear(128, input_dim),
-            nn.Sigmoid()
+            nn.BatchNorm1d(64),
+            nn.SELU(),
+            nn.Linear(64, in_dim)
         )
+
+        self.training_losses = []
+        self.validation_losses = []
 
     def forward(self, x):
         z = self.encoder(x)
-        out = self.decoder(z)
-        return out
-```
+        return self.decoder(z)
+````
 
-The latent space (`z`) typically has between **16–64 dimensions**, depending on the input complexity.
+### 3. Training and optimization
+The model is trained using `Smooth L1 Loss` (Huber Loss) to improve robustness against outliers and reduce the influence of extreme reconstruction errors often caused by rare signal events.
 
----
+````python
+def training_step(self, batch, batch_idx):
+    x = batch
+    x_hat = self(x)
+    loss = F.smooth_l1_loss(x_hat, x)
+    self.log('train_loss', loss, prog_bar=True)
+    return loss
+````
+The `AdamW optimizer` is used with a small weight decay to prevent overfitting:
 
-### 3. Training and Optimization
+````python
+def configure_optimizers(self):
+    return torch.optim.AdamW(self.parameters(), lr=1e-4, weight_decay=1e-5)
 
-The model is trained using **Mean Squared Error (MSE)** between the original and reconstructed input.  
-This encourages the network to minimize the reconstruction difference for normal events.
+````
+Early stopping and checkpointing ensure the model stops training once convergence is reached.
 
-```python
-model = Autoencoder(input_dim=X_tensor.shape[1])
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+````python
+es = EarlyStopping(monitor="val_loss", mode="min", patience=5)
+cp = ModelCheckpoint(save_top_k=1, monitor="val_loss", mode="min")
+trainer = L.Trainer(callbacks=[es, cp], max_epochs=1000, accelerator="auto")
+trainer.fit(model, train_dataloaders=ae_tdl, val_dataloaders=ae_vdl)
 
-num_epochs = 100
-for epoch in range(num_epochs):
-    model.train()
-    total_loss = 0
-    for batch in train_loader:
-        x = batch[0]
-        optimizer.zero_grad()
-        output = model(x)
-        loss = criterion(output, x)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader):.6f}")
-```
-
-Training progress can be visualized by tracking both training and validation loss curves.  
-An early stopping mechanism halts training when overfitting is detected.
+````
+After training, the loss curves are plotted.
 
 ---
 
 ### 4. Anomaly Detection and Scoring
 
-Once trained, the Autoencoder is used to reconstruct unseen data.  
-The reconstruction error serves as an **anomaly score** — higher errors indicate abnormal events.
+After training, the Autoencoder reconstructs unseen data. The reconstruction error is computed for each event to determine its anomaly likelihood.
 
-```python
-model.eval()
-reconstructions = model(X_tensor)
-reconstruction_errors = torch.mean((X_tensor - reconstructions) ** 2, dim=1)
+````python
+pred = trainer.predict(model, tdl)
+reco = np.mean((np.vstack(pred) - X_test) ** 2, axis=1)
 
-threshold = reconstruction_errors.mean() + 3 * reconstruction_errors.std()
-anomalies = (reconstruction_errors > threshold)
-```
-
-This simple statistical threshold identifies events likely to represent **rare physics signals or detector anomalies**.
+````
+* Low error → event resembles background (QCD-like).
+* High error → event deviates from standard patterns (potential signal or anomaly).
 
 ---
-
 ### 5. Evaluation and Visualization
 
-Performance evaluation uses:
-- **Reconstruction Error Distribution** (histogram comparison between normal and anomalous events)
-- **Scatter Plots** for variable correlation inspection
-- **Latent Space Visualization** with PCA/t-SNE for dimensional reduction
+The Autoencoder’s performance is quantified through:
 
-```python
-import matplotlib.pyplot as plt
-
-plt.hist(reconstruction_errors.detach().numpy(), bins=50, alpha=0.7)
-plt.title('Reconstruction Error Distribution')
-plt.xlabel('Reconstruction Error')
-plt.ylabel('Frequency')
-plt.show()
-```
+* ROC curve to measure discriminative power between signal and noise.
+* PCA and t-SNE projections to explore the latent space separation.
+* Scatter plots to visualize reconstruction error per event.
 ---
+
 ## Results
 
 After extensive training, the autoencoder successfully reconstructed most background-like events, while signal-like events showed higher reconstruction errors, suggesting distinct latent behavior.
