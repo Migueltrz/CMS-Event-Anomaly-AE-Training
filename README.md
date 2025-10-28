@@ -1,10 +1,32 @@
-# Autoencoder-Based Anomaly Detection Using CMS CERN Data
-
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue?logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange?logo=pytorch)
+![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange?logo=pytorch)# Autoencoder-Based Anomaly Detection Using CMS CERN Data
+
+
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 ![Status](https://img.shields.io/badge/status-active-success)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20ACARUS-lightgrey)
+
+
+---
+
+## Table of Contents
+<details>
+  <summary>Click to expand</summary>
+
+1. [Overview](#overview)
+2. [Technical Description](#technical-description)
+3. [Core Workflow and Architecture](#workflow-and-architecture)
+4. [Results](#results)
+5. [Environment Setup](#enviroment-setup)
+6. [Execution](#execution)
+7. [Dataset Notice](#dataset-notice)
+8. [License](#license)
+9. [Acknowledgments](#acknowledgments)
+
+</details>
+
+---
+
 
 ---
 
@@ -26,40 +48,133 @@ The workflow is structured to facilitate reproducibility and reusability for oth
 
 ---
 
-## Core Workflow
+## Core Workflow and Architecture
 
 ### 1. Data Loading and Preprocessing
 
-- The dataset is read from CERN’s secure data storage and preprocessed using `pandas` and `numpy`.
-- Numerical variables are standardized to zero mean and unit variance using `StandardScaler`.
-- Non-numerical columns are excluded automatically to maintain compatibility with PyTorch tensors.
-
-```python
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
-import torch
-
-df = pd.read_csv('private_cms_data.csv')
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(df.select_dtypes('number'))
-X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
-```
-
-Data is then split into training and validation subsets:
-
-```python
-from torch.utils.data import DataLoader, TensorDataset, random_split
-
-dataset = TensorDataset(X_tensor)
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-train_data, val_data = random_split(dataset, [train_size, val_size])
-
-train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
-val_loader = DataLoader(val_data, batch_size=64, shuffle=False)
-```
+This stage handles **reading, structuring, and preparing** high-energy physics event data from CERN’s internal HDF5 files (`.h5`), which store structured arrays of variables per event.  
+Unlike CSV data, these files hold **multi-dimensional arrays** corresponding to multiple detector variables.
 
 ---
+
+#### **a. HDF5 Data Exploration**
+
+The dataset is opened using `h5py`, allowing us to inspect its internal keys (datasets) and their dimensions.  
+This helps confirm the available physical quantities and the structure of the input data before modeling.
+
+```python
+import h5py
+import numpy as np
+import matplotlib.pyplot as plt
+
+with h5py.File("ntuple_merged_3.h5", "r") as f:
+    for key in f.keys():
+        print(f"Dataset: {key}, Shape: {f[key].shape}, Type: {f[key].dtype}")
+
+    print(f['nElectron'][:5])
+    print(f['nMuon'][:5])
+```
+Each dataset corresponds to a physical observable such as:
+
+* The number of reconstructed electrons (`nElectron`)
+* The number of reconstructed muons (`nMuon`)
+* Jet or invariant mass quantities (`A_Zmass`, `B_Zmass`, etc.)
+
+#### **b. Event Distribution Analysis**
+`Dataset_ID` is a categorical variable identifying the event origin for example, QCD background (1, 2) or Higgs-like signal (3, 4, ...). We verify how many events exist per dataset ID to ensure data balance.
+
+```python
+with h5py.File("ntuple_merged_3.h5", "r") as f:
+    dataset_ids = f['Dataset_ID'][:]
+
+unique_ids, counts = np.unique(dataset_ids.astype(int), return_counts=True)
+
+plt.figure(figsize=(8, 5))
+plt.bar(unique_ids, counts, width=0.6, color='steelblue', edgecolor='black')
+plt.xlabel('Dataset_ID (integer)')
+plt.ylabel('Count')
+plt.title('Distribution of Dataset_IDs')
+plt.xticks(unique_ids)
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.tight_layout()
+plt.show()
+```
+
+#### **c. Feature and Label Extraction**
+Specific physical variables are defined for use in the training phase:
+```python
+features = [
+    "A_Zmass", "B_Zmass", "C_Zmass", "D_Zmass",
+    "A_Dr_Z", "B_Dr_Z", "C_Dr_Z", "D_Dr_Z",
+    "MET_pt"
+]
+labels = ['Dataset_ID']
+```
+The following function reads those arrays from the `.h5` file, returning two NumPy arrays:
+
+* `feature_array` → event-by-variable matrix
+* `label_array` → binary encoding (0 = background, 1 = signal)
+
+```python
+def get_features_labels(file_name):
+    h5file = tables.open_file(file_name, 'r')
+    nevents = getattr(h5file.root, features[0]).shape[0]
+    feature_array = np.zeros((nevents, len(features)))
+    label_array = np.zeros((nevents, 2))
+
+    for i, feat in enumerate(features):
+        feature_array[:, i] = getattr(h5file.root, feat)[:]
+
+    bkg_ids = {1, 2}
+    dataset_id_array = getattr(h5file.root, labels[0])[:]
+    label_array[:, 0] = np.isin(dataset_id_array, list(bkg_ids)).astype(int)
+    label_array[:, 1] = 1 - label_array[:, 0]
+
+    h5file.close()
+    return feature_array, label_array
+```
+#### **d. Signal vs. Background Visualization**
+A quick inspection of the distributions confirms which variables differentiate the two classes. We use Seaborn histograms to compare “signal” (events of interest) and “background” (QCD-like noise).
+
+```python
+import seaborn as sns
+import pandas as pd
+
+df = pd.DataFrame(feature_array, columns=features)
+df['label'] = np.where(label_array[:, 1] == 1, 'Signal', 'Background')
+
+for feat in features:
+    plt.figure(figsize=(6, 4))
+    sns.histplot(data=df, x=feat, hue='label', stat='density', element='step', common_norm=False)
+    plt.title(f'Distribution of {feat} by Class')
+    plt.xlabel(feat)
+    plt.ylabel('Density')
+    plt.tight_layout()
+    plt.show()
+``` 
+#### **e. Dataset Splitting and PyTorch Wrapping**
+After verification, the feature matrix and labels are divided into training, validation, and test sets, maintaining randomization and class balance and define a minimal `Dataset` class for PyTorch:
+
+````python
+
+
+X_train, X_temp, _, y_temp = train_test_split(feature_array, label_array, test_size=0.2, random_state=42, shuffle=True)
+X_valid, X_test, _, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+````
+
+````python
+
+class SensorDataset(Dataset):
+    def __init__(self, dataset: np.array):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        return torch.FloatTensor(self.dataset[index])
+````
+
 
 ### 2. Model Architecture
 
@@ -162,12 +277,38 @@ plt.xlabel('Reconstruction Error')
 plt.ylabel('Frequency')
 plt.show()
 ```
+---
+## Results
+
+After extensive training, the autoencoder successfully reconstructed most background-like events, while signal-like events showed higher reconstruction errors, suggesting distinct latent behavior.
+
+Typical plots include:
+
+* Loss Curve Evolution
+
+The model successfully converged, as both the training and validation loss curves show a sharp initial drop and then stabilize (flatten out) after about $7.5$ epochs, indicating the autoencoder has finished learning1111.
+
+* Latent Space Projection
+
+The model successfully converged, as both the training and validation loss curves show a sharp initial drop and then stabilize (flatten out) after about $7.5$ epochs, indicating the autoencoder has finished learning1111.
+
+* Reconstruction Error Distribution
+
+This log-scale histogram confirms the anomaly detection strategy: "Ruido" (Background) has a very low reconstruction error, while "Señal" (Signal) exhibits a higher and more dispersed reconstruction error (the desired anomaly signature).
+
+* Signal vs. Background Scatter Distribution
+
+This is the most important and illustrative result. This scatter plot, which includes an anomaly Umbral $= 1300.00$ (Threshold) 1, shows that the vast majority of "Ruido" (Background) events are correctly clustered with a very low reconstruction error, well below the threshold2. The plot effectively separates the anomalies: out of 24 total anomalies, 15 were correctly identified as "Señal" (Signal) events above the threshold, while 9 "Ruido" (Background) events were falsely classified as anomalies (false positives)3. This highlights the model's success in anomaly detection, despite a small degree of misclassification.
+
+These outcomes validate the autoencoder’s ability to identify statistically rare events that could correspond to physics beyond the Standard Model.
+
 
 ---
 
 ## Environment Setup
 
-To reproduce the environment:
+To ensure reproducibility and compatibility with CERN’s data handling and PyTorch-based workflows, it is recommended to create a **dedicated Python environment** using either `conda` or `venv`.  
+The project depends on **machine learning, visualization, and HDF5 processing libraries**.
 
 ```bash
 pip install torch torchvision numpy pandas matplotlib scikit-learn
@@ -179,7 +320,7 @@ Optional for GPU acceleration:
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
-Recommended hardware:  
+Hardware used:  
 - **GPU:** NVIDIA with CUDA 11.8+  
 - **Memory:** ≥16 GB RAM  
 - **OS:** Linux (ACARUS cluster or Ubuntu 22.04 LTS)
