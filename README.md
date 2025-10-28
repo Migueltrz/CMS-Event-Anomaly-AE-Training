@@ -1,7 +1,7 @@
+# Autoencoder-Based Anomaly Detection Using CMS CERN Data
+
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue?logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange?logo=pytorch)# Autoencoder-Based Anomaly Detection Using CMS CERN Data
-
-
+![PyTorch](https://img.shields.io/badge/pytorch-2.0%2B-orange?logo=pytorch)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 ![Status](https://img.shields.io/badge/status-active-success)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20ACARUS-lightgrey)
